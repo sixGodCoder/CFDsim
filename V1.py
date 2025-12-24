@@ -51,18 +51,18 @@ st.markdown("""
 # ==========================================
 if 'init' not in st.session_state:
     st.session_state.init = True
-    st.session_state.phase = 'home'  # home, project_select, config, solver, result
+    st.session_state.phase = 'home' # home, project_select, config, solver, result
     st.session_state.logs = []
-
+    
     # 玩家属性
     st.session_state.player = {
         'day': 1,
         'hair': 100,
         'sanity': 100,
-        'credits': 500,  # HPC机时
+        'credits': 500, # HPC机时
         'citations': 0
     }
-
+    
     # 当前项目暂存
     st.session_state.project = {
         'name': '',
@@ -75,7 +75,6 @@ if 'init' not in st.session_state:
         'diverge_reason': ''
     }
 
-
 # ==========================================
 # 3. 辅助逻辑
 # ==========================================
@@ -84,14 +83,12 @@ def change_phase(new_phase):
     st.session_state.phase = new_phase
     st.rerun()
 
-
 def update_stat(key, value):
     st.session_state.player[key] += value
 
-
 def run_solver_step(mode):
     p = st.session_state.project
-
+    
     # 模式定义
     if mode == 'safe':
         cfl = 0.5
@@ -106,7 +103,7 @@ def run_solver_step(mode):
     elif mode == 'risky':
         cfl = 5.0
         speed = 15
-        risk = 0.25 + (p['difficulty'] / 50.0)  # 难度越高炸率越高
+        risk = 0.25 + (p['difficulty'] / 50.0) # 难度越高炸率越高
         cost = 5
 
     # 扣费
@@ -119,7 +116,7 @@ def run_solver_step(mode):
     # 创新点越多，越容易炸
     innovation_penalty = len(p['innovations']) * 0.05
     final_risk = risk + innovation_penalty
-
+    
     if random.random() < final_risk:
         p['is_diverged'] = True
         p['diverge_reason'] = random.choice([
@@ -135,20 +132,19 @@ def run_solver_step(mode):
 
     # 正常计算
     p['progress'] += speed
-
+    
     # 残差模拟
     last_res = p['residuals'][-1] if p['residuals'] else -1.0
     # 残差波动逻辑
     base_drop = -0.1 if cfl < 2 else -0.05
     noise = random.uniform(-0.2, 0.2) * cfl
     new_res = last_res + base_drop + noise
-    new_res = max(-6, new_res)  # 下限 -6
+    new_res = max(-6, new_res) # 下限 -6
     p['residuals'].append(new_res)
-
+    
     if p['progress'] >= 100:
         return "done"
     return "running"
-
 
 # ==========================================
 # 4. 界面渲染 (分阶段)
@@ -174,7 +170,7 @@ if st.session_state.phase == 'home':
     “今年必须要发一篇顶刊，否则不用毕业了。”
     </div>
     """, unsafe_allow_html=True)
-
+    
     if st.button("👉 开始干活 (Start)"):
         change_phase('project_select')
 
@@ -182,27 +178,27 @@ if st.session_state.phase == 'home':
 elif st.session_state.phase == 'project_select':
     st.subheader("第一步：选择研究课题")
     st.write("导师给了你三个可选的船型方向，请做出选择：")
-
+    
     col1, col2, col3 = st.columns(3)
-
+    
     with col1:
         if st.button("🟢 DTMB 5415\n(静水阻力)"):
             st.session_state.project['name'] = "DTMB 5415 阻力"
             st.session_state.project['difficulty'] = 2
             change_phase('config')
-
+            
     with col2:
         if st.button("🟡 KCS 货船\n(波浪增阻)"):
             st.session_state.project['name'] = "KCS 波浪增阻"
             st.session_state.project['difficulty'] = 5
             change_phase('config')
-
+            
     with col3:
         if st.button("🔴 ONR Tumblehome\n(破损自航)"):
             st.session_state.project['name'] = "ONR 破损自航"
             st.session_state.project['difficulty'] = 9
             change_phase('config')
-
+            
     st.info("提示：难度越高，发顶刊概率越大，但计算越容易报错。")
 
 # --- 阶段 2: 物理配置 (按钮阵列) ---
@@ -210,7 +206,7 @@ elif st.session_state.phase == 'config':
     st.subheader("第二步：配置物理模型")
     st.write(f"当前项目: **{st.session_state.project['name']}**")
     st.write("你需要确定求解策略。越花哨的方法，审稿人越喜欢，但也越烧钱。")
-
+    
     st.markdown("### 1. 湍流模型 (Turbulence)")
     c1, c2 = st.columns(2)
     with c1:
@@ -221,45 +217,39 @@ elif st.session_state.phase == 'config':
     with c2:
         if st.button("DES / LES (大涡模拟)\n高精度、昂贵、易发散"):
             st.session_state.project['method'] = "LES"
-            st.session_state.project['difficulty'] += 5  # 难度激增
-
+            st.session_state.project['difficulty'] += 5 # 难度激增
+    
     # 如果用户没点上面的，下面的代码不会执行，因为rerun。
     # 为了实现 sequential flow，必须把 state 存下来。
     # 这里为了演示方便，做一个简单判定：如果 project['method'] 还是空，就只显示上面。
     # 如果选了 method，就显示下一步。
-
+    
     if st.session_state.project['method'] != '':
         st.markdown("### 2. 添加创新点 (Buff)")
         st.info("点击添加，增加论文含金量：")
-
+        
         col_i1, col_i2, col_i3 = st.columns(3)
-
+        
         # 使用 toggle 逻辑：检查是否在列表里
         has_overset = "重叠网格" in st.session_state.project['innovations']
         label_overset = "✅ 已添加: 重叠网格" if has_overset else "➕ 重叠网格 (Overset)"
         if col_i1.button(label_overset):
-            if has_overset:
-                st.session_state.project['innovations'].remove("重叠网格")
-            else:
-                st.session_state.project['innovations'].append("重叠网格")
+            if has_overset: st.session_state.project['innovations'].remove("重叠网格")
+            else: st.session_state.project['innovations'].append("重叠网格")
             st.rerun()
 
         has_vof = "高阶VOF格式" in st.session_state.project['innovations']
         label_vof = "✅ 已添加: 高阶VOF" if has_vof else "➕ 高阶VOF格式"
         if col_i2.button(label_vof):
-            if has_vof:
-                st.session_state.project['innovations'].remove("高阶VOF格式")
-            else:
-                st.session_state.project['innovations'].append("高阶VOF格式")
+            if has_vof: st.session_state.project['innovations'].remove("高阶VOF格式")
+            else: st.session_state.project['innovations'].append("高阶VOF格式")
             st.rerun()
-
+            
         has_6dof = "6自由度运动" in st.session_state.project['innovations']
         label_6dof = "✅ 已添加: 6-DOF" if has_6dof else "➕ 6自由度运动"
         if col_i3.button(label_6dof):
-            if has_6dof:
-                st.session_state.project['innovations'].remove("6自由度运动")
-            else:
-                st.session_state.project['innovations'].append("6自由度运动")
+            if has_6dof: st.session_state.project['innovations'].remove("6自由度运动")
+            else: st.session_state.project['innovations'].append("6自由度运动")
             st.rerun()
 
         st.markdown("---")
@@ -271,9 +261,9 @@ elif st.session_state.phase == 'config':
 # --- 阶段 3: 求解器 (核心玩法) ---
 elif st.session_state.phase == 'solver':
     p = st.session_state.project
-
+    
     st.subheader("第三步：计算求解 (Solver)")
-
+    
     # 1. 绘图区域
     if p['residuals']:
         fig = go.Figure()
@@ -287,7 +277,7 @@ elif st.session_state.phase == 'solver':
             yaxis_range=[-7, 10]
         )
         st.plotly_chart(fig, use_container_width=True)
-
+    
     # 2. 状态判定
     if p['is_diverged']:
         st.error(f"❌ 计算发散！错误代码: {p['diverge_reason']}")
@@ -297,12 +287,12 @@ elif st.session_state.phase == 'solver':
         现在你有两个选择：
         </div>
         """, unsafe_allow_html=True)
-
+        
         c1, c2 = st.columns(2)
         with c1:
             if st.button("🛠️ 减小松弛因子救一下 (SAN -10)"):
                 p['is_diverged'] = False
-                p['residuals'].append(p['residuals'][-1] - 3)  # 强行压下去
+                p['residuals'].append(p['residuals'][-1] - 3) # 强行压下去
                 update_stat('sanity', -10)
                 st.rerun()
         with c2:
@@ -311,30 +301,30 @@ elif st.session_state.phase == 'solver':
                 st.session_state.project['progress'] = 0
                 st.session_state.project['is_diverged'] = False
                 change_phase('config')
-
+                
     elif p['progress'] >= 100:
         st.success("✅ 计算收敛！")
         if st.button("📄 提取数据，撰写论文"):
             change_phase('result')
-
+            
     else:
         # 3. 操作区域 (三个策略按钮)
         st.write("请选择下一步的迭代策略：")
-
+        
         c1, c2, c3 = st.columns(3)
-
+        
         with c1:
             if st.button("🛡️ 苟住 (Safe)\nCFL 0.5 | 慢速 | 极稳"):
                 res = run_solver_step('safe')
                 if res == "no_money": st.toast("没钱买机时了！")
                 st.rerun()
-
+                
         with c2:
             if st.button("⚖️ 稳健 (Normal)\nCFL 1.0 | 标准 | 微险"):
                 res = run_solver_step('normal')
                 if res == "no_money": st.toast("没钱买机时了！")
                 st.rerun()
-
+                
         with c3:
             if st.button("🔥 赌狗 (Risky)\nCFL 5.0 | 极速 | 易炸"):
                 res = run_solver_step('risky')
@@ -345,13 +335,13 @@ elif st.session_state.phase == 'solver':
 elif st.session_state.phase == 'result':
     p = st.session_state.project
     st.subheader("第四步：投稿环节")
-
+    
     # 计算最终评分
     quality = p['difficulty'] * 10 + len(p['innovations']) * 20
     final_res = p['residuals'][-1]
-    if final_res > -3: quality -= 30  # 收敛不好扣分
+    if final_res > -3: quality -= 30 # 收敛不好扣分
     if p['method'] == 'LES': quality += 30
-
+    
     st.markdown(f"""
     <div class='scenario-text'>
     你完成了《{p['name']}》的模拟。<br>
@@ -359,9 +349,9 @@ elif st.session_state.phase == 'result':
     论文质量评分: {quality}
     </div>
     """, unsafe_allow_html=True)
-
+    
     st.write("请选择投稿目标：")
-
+    
     c1, c2 = st.columns(2)
     with c1:
         if st.button("JFM / Ocean Eng. (顶刊)"):
@@ -373,9 +363,9 @@ elif st.session_state.phase == 'result':
             else:
                 st.error("拒稿！Reviewer #2 说你的网格无关性验证是伪造的。")
                 update_stat('sanity', -20)
-
+            
             if st.button("🔄 下一个项目"):
-                st.session_state.project['name'] = ''  # Reset
+                st.session_state.project['name'] = '' # Reset
                 st.session_state.project['progress'] = 0
                 st.session_state.project['innovations'] = []
                 st.session_state.project['residuals'] = []
@@ -385,9 +375,9 @@ elif st.session_state.phase == 'result':
         if st.button("水刊 (Open Access)"):
             st.success("发表成功！虽然没什么人看，但至少能毕业。引用 +10")
             update_stat('citations', 10)
-
+            
             if st.button("🔄 下一个项目"):
-                st.session_state.project['name'] = ''  # Reset
+                st.session_state.project['name'] = '' # Reset
                 st.session_state.project['progress'] = 0
                 st.session_state.project['innovations'] = []
                 st.session_state.project['residuals'] = []
