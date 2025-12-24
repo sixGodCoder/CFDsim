@@ -4,407 +4,397 @@ import time
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # ==========================================
-# 1. 深度配置与状态
+# 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="CFD 学术生存 V3.0", page_icon="⚓", layout="wide")
+st.set_page_config(page_title="CFD 模拟器: 按钮版", page_icon="🚢", layout="centered")
 
-# 样式优化：暗黑学术风
+# CSS 美化：让按钮看起来像游戏选项卡
 st.markdown("""
 <style>
-    .reportview-container { background: #0e1117; }
-    .sidebar .sidebar-content { background: #262730; }
-    .big-font { font-size:20px !important; font-family: 'Consolas'; color: #00ff00; }
-    .error-font { font-family: 'Courier New'; color: #ff4b4b; }
-    .stButton>button { width: 100%; border-radius: 5px; }
+    .stButton>button {
+        width: 100%;
+        height: 60px;
+        font-size: 18px !important;
+        font-weight: bold;
+        border-radius: 12px;
+        border: 2px solid #333;
+        transition: all 0.2s;
+    }
+    .stButton>button:hover {
+        transform: scale(1.02);
+        border-color: #00ADB5;
+    }
+    .stat-box {
+        background: #222;
+        padding: 10px;
+        border-radius: 8px;
+        text-align: center;
+        border: 1px solid #444;
+        margin-bottom: 10px;
+    }
+    .scenario-text {
+        font-size: 20px;
+        line-height: 1.6;
+        margin-bottom: 30px;
+        padding: 20px;
+        background: #1E1E1E;
+        border-left: 5px solid #00ADB5;
+        border-radius: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-if 'user' not in st.session_state:
-    st.session_state.user = {
-        'day': 1,
-        'funds': 10000,  # 科研经费
-        'sanity': 100,  # SAN值
-        'hair': 100,  # 发量
-        'citations': 0,  # 引用量 (核心积分)
-        'hpc_credits': 500,  # 机时 (核心资源)
-        'skills': {'mesh': 10, 'numerics': 10, 'writing': 5}
-    }
-    st.session_state.project = None
+# ==========================================
+# 2. 状态初始化
+# ==========================================
+if 'init' not in st.session_state:
+    st.session_state.init = True
+    st.session_state.phase = 'home'  # home, project_select, config, solver, result
     st.session_state.logs = []
-    st.session_state.history_residuals = []
+
+    # 玩家属性
+    st.session_state.player = {
+        'day': 1,
+        'hair': 100,
+        'sanity': 100,
+        'credits': 500,  # HPC机时
+        'citations': 0
+    }
+
+    # 当前项目暂存
+    st.session_state.project = {
+        'name': '',
+        'difficulty': 0,
+        'method': '',
+        'innovations': [],
+        'progress': 0,
+        'residuals': [],
+        'is_diverged': False,
+        'diverge_reason': ''
+    }
 
 
 # ==========================================
-# 2. 类定义：更复杂的项目结构
+# 3. 辅助逻辑
 # ==========================================
 
-class Project:
-    def __init__(self, name, model_type, difficulty):
-        self.name = name
-        self.model_type = model_type  # 'Resistance', 'Seakeeping', 'Damaged'
-        self.difficulty = difficulty
-
-        # 创新配置 (Player选择)
-        self.turbulence = "k-epsilon"  # 默认
-        self.method = "VOF"
-        self.innovation = "None"
-
-        # 求解器状态
-        self.progress = 0
-        self.residuals = []
-        self.cfl_history = []
-        self.is_diverged = False
-        self.error_msg = ""
-
-        # 结果质量
-        self.accuracy = 0
-        self.novelty_score = 0
-
-    # ==========================================
+def change_phase(new_phase):
+    st.session_state.phase = new_phase
+    st.rerun()
 
 
-# 3. 核心逻辑函数
-# ==========================================
-
-def add_log(msg, level="info"):
-    icon = "ℹ️"
-    if level == "error":
-        icon = "🔥"
-    elif level == "success":
-        icon = "✅"
-    elif level == "warning":
-        icon = "⚠️"
-    st.session_state.logs.insert(0, f"[{st.session_state.user['day']}天] {icon} {msg}")
+def update_stat(key, value):
+    st.session_state.player[key] += value
 
 
-def calculate_stability(proj, cfl):
-    # 稳定性核心公式
-    # 基础难度
-    risk = proj.difficulty * 5
-
-    # 湍流模型风险
-    if proj.turbulence == "k-omega SST":
-        risk += 5
-    elif proj.turbulence == "IDDES":
-        risk += 25  # 极难收敛
-    elif proj.turbulence == "LES":
-        risk += 40
-
-    # 创新点风险
-    if proj.innovation == "Overset Mesh (重叠网格)":
-        risk += 15
-    elif proj.innovation == "6-DOF Motion":
-        risk += 20
-    elif proj.innovation == "Damaged Compartment (破舱)":
-        risk += 30
-
-    # 技能修正
-    skill_mitigation = st.session_state.user['skills']['numerics'] * 1.5
-
-    # CFL 放大系数
-    cfl_factor = cfl ** 2  # CFL 越大，风险指数级上升
-
-    diverge_prob = (risk * cfl_factor - skill_mitigation) / 1000
-    return max(0.01, diverge_prob)
-
-
-def run_solver_step(cfl_input):
+def run_solver_step(mode):
     p = st.session_state.project
-    u = st.session_state.user
 
-    # 扣除机时
-    cost = 10 if p.turbulence == "RANS" else 50
-    if u['hpc_credits'] < cost:
-        return "no_credits"
-    u['hpc_credits'] -= cost
+    # 模式定义
+    if mode == 'safe':
+        cfl = 0.5
+        speed = 2
+        risk = 0.0
+        cost = 20
+    elif mode == 'normal':
+        cfl = 1.0
+        speed = 5
+        risk = 0.05
+        cost = 10
+    elif mode == 'risky':
+        cfl = 5.0
+        speed = 15
+        risk = 0.25 + (p['difficulty'] / 50.0)  # 难度越高炸率越高
+        cost = 5
 
-    # 计算风险
-    diverge_prob = calculate_stability(p, cfl_input)
+    # 扣费
+    if st.session_state.player['credits'] < cost:
+        return "no_money"
+    st.session_state.player['credits'] -= cost
+    st.session_state.player['day'] += 1
 
-    # 随机判定发散
-    if random.random() < diverge_prob:
-        p.is_diverged = True
-        errors = [
-            "Floating Point Exception: Overflow",
-            "Negative Volume in Cell ID: 45210",
-            "SIGSEGV: Segmentation Fault",
-            "Divergence detected in AMG solver"
-        ]
-        p.error_msg = random.choice(errors)
-        p.residuals.append(5.0)  # 残差飙升
+    # 判定发散
+    # 创新点越多，越容易炸
+    innovation_penalty = len(p['innovations']) * 0.05
+    final_risk = risk + innovation_penalty
+
+    if random.random() < final_risk:
+        p['is_diverged'] = True
+        p['diverge_reason'] = random.choice([
+            "Negative Volume (网格负体积)",
+            "SIGSEGV (段错误)",
+            "Divergence in AMG Solver",
+            "Floating Point Exception"
+        ])
+        p['residuals'].append(5.0)
+        update_stat('sanity', -10)
+        update_stat('hair', -5)
         return "diverged"
 
-    # 正常收敛逻辑
-    last_res = p.residuals[-1] if p.residuals else -1.0
-    # 收敛速度与 CFL 成正比
-    speed = cfl_input * (1 + u['skills']['numerics'] / 20)
-    p.progress += speed
+    # 正常计算
+    p['progress'] += speed
 
-    # 残差波动
-    noise = np.random.normal(0, 0.1 * cfl_input)
-    trend = -0.05 if p.progress < 80 else -0.01  # 后期难以在大下降
-    new_res = max(-6, last_res + trend + noise)
+    # 残差模拟
+    last_res = p['residuals'][-1] if p['residuals'] else -1.0
+    # 残差波动逻辑
+    base_drop = -0.1 if cfl < 2 else -0.05
+    noise = random.uniform(-0.2, 0.2) * cfl
+    new_res = last_res + base_drop + noise
+    new_res = max(-6, new_res)  # 下限 -6
+    p['residuals'].append(new_res)
 
-    p.residuals.append(new_res)
-    p.cfl_history.append(cfl_input)
-
-    if p.progress >= 100:
-        return "completed"
+    if p['progress'] >= 100:
+        return "done"
     return "running"
 
 
-def submit_paper():
-    p = st.session_state.project
-    u = st.session_state.user
-
-    # 论文质量评分 = 创新分 + 精度分 + 写作技能
-    paper_quality = p.novelty_score + (100 + p.residuals[-1] * 10) + u['skills']['writing']
-
-    # 审稿人心情 (RNG)
-    reviewer_mood = random.randint(-20, 20)
-    final_score = paper_quality + reviewer_mood
-
-    threshold = 80 + (p.difficulty * 5)
-
-    if final_score >= threshold:
-        impact = int(p.novelty_score * 2 + random.randint(10, 50))
-        u['citations'] += impact
-        u['funds'] += impact * 100
-        add_log(f"Paper Accepted! 发表在 JFM/Ocean Eng. 引用+{impact}, 经费到账。", "success")
-    else:
-        reasons = [
-            "Reviewer #2: '缺乏网格无关性验证。'",
-            "Reviewer #2: '创新点不足，建议转投 Open Access。'",
-            "Reviewer #2: '实验数据对比误差太大。'",
-            "Editor: '不在本刊收录范围内。'"
-        ]
-        u['sanity'] -= 15
-        add_log(f"拒稿 (Rejected). {random.choice(reasons)}", "error")
-
-    st.session_state.project = None
-
-
 # ==========================================
-# 4. 界面构建
+# 4. 界面渲染 (分阶段)
 # ==========================================
 
-# --- 侧边栏 ---
-with st.sidebar:
-    st.title("🎓 博士生面板")
-    u = st.session_state.user
+# 顶部状态栏 (永远显示)
+pl = st.session_state.player
+c1, c2, c3, c4 = st.columns(4)
+c1.markdown(f"<div class='stat-box'>📅 Day {pl['day']}</div>", unsafe_allow_html=True)
+c2.markdown(f"<div class='stat-box'>💰 机时 {pl['credits']}</div>", unsafe_allow_html=True)
+c3.markdown(f"<div class='stat-box'>🧠 SAN {pl['sanity']}</div>", unsafe_allow_html=True)
+c4.markdown(f"<div class='stat-box'>👴 发量 {pl['hair']}%</div>", unsafe_allow_html=True)
 
-    col1, col2 = st.columns(2)
-    col1.metric("H-Index", int(u['citations'] / 10))
-    col2.metric("引用量", u['citations'])
+st.markdown("---")
 
-    st.metric("经费 (RMB)", f"¥{u['funds']}")
-    st.progress(u['sanity'] / 100, text=f"SAN值: {u['sanity']}")
-    st.progress(u['hair'] / 100, text=f"发量: {u['hair']}%")
-    st.metric("HPC 机时", f"{u['hpc_credits']} core-hrs")
+# --- 阶段 0: 首页 ---
+if st.session_state.phase == 'home':
+    st.title("🚢 CFD 仿真模拟器")
+    st.markdown("""
+    <div class='scenario-text'>
+    你是一名刚刚入学的流体力学博士生。<br>
+    导师把你叫到办公室，指着屏幕上的 STAR-CCM+ 图标说：<br>
+    “今年必须要发一篇顶刊，否则不用毕业了。”
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.divider()
-    if st.button("购买机时 (¥2000/500hrs)"):
-        if u['funds'] >= 2000:
-            u['funds'] -= 2000
-            u['hpc_credits'] += 500
-            add_log("充值了超算中心机时。")
-            st.rerun()
+    if st.button("👉 开始干活 (Start)"):
+        change_phase('project_select')
 
-    if st.button("参加学术会议 (SAN+20, 经费-5000)"):
-        if u['funds'] >= 5000:
-            u['funds'] -= 5000
-            u['sanity'] = min(100, u['sanity'] + 20)
-            u['skills']['writing'] += 2  # 社交提升写作？
-            add_log("在夏威夷开了个水会，心情大好。")
-            st.rerun()
+# --- 阶段 1: 选题 (三选一) ---
+elif st.session_state.phase == 'project_select':
+    st.subheader("第一步：选择研究课题")
+    st.write("导师给了你三个可选的船型方向，请做出选择：")
 
-# --- 主界面 ---
-st.title("⚓ CFD Academic Survival: DTMB 5415 Edition")
+    col1, col2, col3 = st.columns(3)
 
-if u['sanity'] <= 0 or u['hair'] <= 0:
-    st.error("GAME OVER. 你因压力过大退学了。")
-    if st.button("重读博士"):
-        st.session_state.clear()
-        st.rerun()
-    st.stop()
+    with col1:
+        if st.button("🟢 DTMB 5415\n(静水阻力)"):
+            st.session_state.project['name'] = "DTMB 5415 阻力"
+            st.session_state.project['difficulty'] = 2
+            change_phase('config')
 
-# 选项卡
-tab_proposal, tab_solver, tab_post = st.tabs(["📑 项目立项 (Proposal)", "🖥️ 求解器 (Solver)", "📈 后处理 (Post)"])
+    with col2:
+        if st.button("🟡 KCS 货船\n(波浪增阻)"):
+            st.session_state.project['name'] = "KCS 波浪增阻"
+            st.session_state.project['difficulty'] = 5
+            change_phase('config')
 
-# === TAB 1: 立项 ===
-with tab_proposal:
-    if st.session_state.project is None:
-        st.subheader("撰写新的研究计划")
+    with col3:
+        if st.button("🔴 ONR Tumblehome\n(破损自航)"):
+            st.session_state.project['name'] = "ONR 破损自航"
+            st.session_state.project['difficulty'] = 9
+            change_phase('config')
 
-        # 1. 选择船型工况
-        col1, col2 = st.columns(2)
-        with col1:
-            base_case = st.selectbox("研究对象 (Hull Form)",
-                                     ["DTMB 5415 (静水阻力)", "DTMB 5415 (规则波)", "DTMB 5415 (破损稳性/Damaged)"])
+    st.info("提示：难度越高，发顶刊概率越大，但计算越容易报错。")
 
-        # 2. 选择数值方法 (组合创新)
-        with col2:
-            turb_model = st.selectbox("湍流模型",
-                                      ["k-epsilon (RANS)", "k-omega SST (RANS)", "IDDES (Hybrid)", "LES (高保真)"])
+# --- 阶段 2: 物理配置 (按钮阵列) ---
+elif st.session_state.phase == 'config':
+    st.subheader("第二步：配置物理模型")
+    st.write(f"当前项目: **{st.session_state.project['name']}**")
+    st.write("你需要确定求解策略。越花哨的方法，审稿人越喜欢，但也越烧钱。")
 
-        st.write("### 添加创新点 (Innovation Points)")
-        st.caption("创新点越多，论文越容易中，但越难算。")
+    st.markdown("### 1. 湍流模型 (Turbulence)")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("RANS (k-epsilon)\n稳定、便宜、老旧"):
+            st.session_state.project['method'] = "RANS"
+            # 这里的逻辑稍微改一下，直接进入下一环节，或者存状态
+            # 为了简化按钮流，我们选完这个直接去选创新点
+    with c2:
+        if st.button("DES / LES (大涡模拟)\n高精度、昂贵、易发散"):
+            st.session_state.project['method'] = "LES"
+            st.session_state.project['difficulty'] += 5  # 难度激增
 
-        innovations = st.multiselect("选择数值创新技术",
-                                     ["Overset Mesh (重叠网格)", "VOF-to-DPM (多相流转换)", "6-DOF Motion (自航)",
-                                      "Active Fin Stabilizer (减摇鳍)"])
+    # 如果用户没点上面的，下面的代码不会执行，因为rerun。
+    # 为了实现 sequential flow，必须把 state 存下来。
+    # 这里为了演示方便，做一个简单判定：如果 project['method'] 还是空，就只显示上面。
+    # 如果选了 method，就显示下一步。
 
-        # 计算难度预览
-        base_diff = {"DTMB 5415 (静水阻力)": 2, "DTMB 5415 (规则波)": 5, "DTMB 5415 (破损稳性/Damaged)": 9}[base_case]
-        innov_score = len(innovations) * 10
-        if "IDDES" in turb_model: innov_score += 15
-        if "LES" in turb_model: innov_score += 30
+    if st.session_state.project['method'] != '':
+        st.markdown("### 2. 添加创新点 (Buff)")
+        st.info("点击添加，增加论文含金量：")
 
-        est_difficulty = base_diff + len(innovations) * 2
-        st.info(f"预计难度系数: {est_difficulty} | 预计学术价值: {innov_score + base_diff * 5}")
+        col_i1, col_i2, col_i3 = st.columns(3)
 
-        if st.button("提交开题报告 (Start Project)"):
-            new_proj = Project(base_case, base_case, est_difficulty)
-            new_proj.turbulence = turb_model
-            new_proj.innovation = ", ".join(innovations) if innovations else "None"
-            new_proj.novelty_score = innov_score + base_diff * 5
-            st.session_state.project = new_proj
-            add_log(f"项目启动: {base_case} using {turb_model}")
-            st.rerun()
-    else:
-        st.info("当前已有项目正在进行，请前往【求解器】页面。")
-        if st.button("删库跑路 (放弃项目)"):
-            st.session_state.project = None
-            u['sanity'] += 5
-            add_log("放弃了项目，虽然可耻但有用。")
-            st.rerun()
-
-# === TAB 2: 求解器 ===
-with tab_solver:
-    proj = st.session_state.project
-    if proj:
-        st.subheader(f"正在计算: {proj.name}")
-        st.caption(f"配置: {proj.turbulence} | 创新: {proj.innovation}")
-
-        # 布局
-        g_col1, g_col2 = st.columns([3, 1])
-
-        with g_col1:
-            # 实时残差图 (使用 Plotly)
-            if proj.residuals:
-                fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-                # 残差线
-                fig.add_trace(
-                    go.Scatter(y=proj.residuals, mode='lines', name='Residuals (log)', line=dict(color='#00ff00')),
-                    secondary_y=False)
-                # CFL 线
-                fig.add_trace(go.Scatter(y=proj.cfl_history, mode='lines', name='CFL Number',
-                                         line=dict(color='yellow', dash='dot')), secondary_y=True)
-
-                fig.update_layout(title="Solver Monitor", template="plotly_dark", height=350,
-                                  margin=dict(l=20, r=20, t=40, b=20))
-                fig.update_yaxes(title_text="Log Residual", range=[-7, 10], secondary_y=False)
-                fig.update_yaxes(title_text="CFL", range=[0, 10], secondary_y=True)
-
-                st.plotly_chart(fig, use_container_width=True)
+        # 使用 toggle 逻辑：检查是否在列表里
+        has_overset = "重叠网格" in st.session_state.project['innovations']
+        label_overset = "✅ 已添加: 重叠网格" if has_overset else "➕ 重叠网格 (Overset)"
+        if col_i1.button(label_overset):
+            if has_overset:
+                st.session_state.project['innovations'].remove("重叠网格")
             else:
-                st.write("等待初始化...")
-                st.image("https://media.giphy.com/media/3o7bu3XilJ5BOiSGic/giphy.gif",
-                         width=200)  # Loading GIF placeholder
+                st.session_state.project['innovations'].append("重叠网格")
+            st.rerun()
 
-        with g_col2:
-            st.write("### 控制台")
-            st.progress(min(100, int(proj.progress)), text=f"物理时间: {int(proj.progress)}%")
+        has_vof = "高阶VOF格式" in st.session_state.project['innovations']
+        label_vof = "✅ 已添加: 高阶VOF" if has_vof else "➕ 高阶VOF格式"
+        if col_i2.button(label_vof):
+            if has_vof:
+                st.session_state.project['innovations'].remove("高阶VOF格式")
+            else:
+                st.session_state.project['innovations'].append("高阶VOF格式")
+            st.rerun()
 
-            # 核心玩法：CFL 调节
-            cfl_val = st.slider("CFL Number (Courant数)", 0.1, 5.0, 1.0, help="CFL越大算得越快，但容易发散。")
+        has_6dof = "6自由度运动" in st.session_state.project['innovations']
+        label_6dof = "✅ 已添加: 6-DOF" if has_6dof else "➕ 6自由度运动"
+        if col_i3.button(label_6dof):
+            if has_6dof:
+                st.session_state.project['innovations'].remove("6自由度运动")
+            else:
+                st.session_state.project['innovations'].append("6自由度运动")
+            st.rerun()
 
-            # 操作按钮
-            if not proj.is_diverged and proj.progress < 100:
-                if st.button("迭代 (Run 50 Steps)"):
-                    with st.spinner("Solving N-S Equations..."):
-                        time.sleep(0.5)  # 模拟计算延迟
-                        status = run_solver_step(cfl_val)
+        st.markdown("---")
+        if st.button("🚀 配置完成，生成网格并开始计算！"):
+            # 初始化残差
+            st.session_state.project['residuals'] = [-1.0]
+            change_phase('solver')
 
-                        if status == "diverged":
-                            add_log(f"计算崩溃! {proj.error_msg}", "error")
-                            u['hair'] -= 5
-                        elif status == "no_credits":
-                            st.error("机时不足！请去充值。")
-                        elif status == "completed":
-                            add_log("计算收敛完成！", "success")
+# --- 阶段 3: 求解器 (核心玩法) ---
+elif st.session_state.phase == 'solver':
+    p = st.session_state.project
 
-                        st.rerun()
+    st.subheader("第三步：计算求解 (Solver)")
 
-            # 发散后的处理
-            if proj.is_diverged:
-                st.error(f"❌ 错误: {proj.error_msg}")
-                if st.button("降低松弛因子重试 (Under-Relaxation)"):
-                    proj.is_diverged = False
-                    proj.residuals.append(proj.residuals[-1] - 2)  # 强行压残差
-                    add_log("调整 URF 试图挽救...", "warning")
-                    st.rerun()
-                if st.button("放弃并重置"):
-                    st.session_state.project = None
-                    st.rerun()
+    # 1. 绘图区域
+    if p['residuals']:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=p['residuals'], mode='lines', name='Residual', line=dict(color='#00ADB5', width=3)))
+        fig.update_layout(
+            title=f"残差监视器 (Progress: {p['progress']}%)",
+            xaxis_title="Iterations",
+            yaxis_title="Log(Residuals)",
+            template="plotly_dark",
+            height=300,
+            yaxis_range=[-7, 10]
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-            # 完成后的处理
-            if proj.progress >= 100:
-                st.success("计算完成！")
-                st.info("请前往【后处理】页面撰写论文。")
+    # 2. 状态判定
+    if p['is_diverged']:
+        st.error(f"❌ 计算发散！错误代码: {p['diverge_reason']}")
+        st.markdown("""
+        <div class='scenario-text'>
+        屏幕上弹出了红色的错误窗口，你的心情跌落谷底。<br>
+        现在你有两个选择：
+        </div>
+        """, unsafe_allow_html=True)
 
-    else:
-        st.warning("请先在【项目立项】页面创建项目。")
-
-# === TAB 3: 后处理 ===
-with tab_post:
-    if st.session_state.project and st.session_state.project.progress >= 100:
-        proj = st.session_state.project
-        st.subheader("📊 结果分析 & 投稿")
-
-        # 模拟生成云图
-        col_res1, col_res2 = st.columns(2)
-        with col_res1:
-            st.write("### 自由液面波高 (VOF)")
-            # 假装生成一个波形图
-            x = np.linspace(0, 10, 100)
-            y = np.sin(x) * (1 - 0.1 * random.random())
-            fig_wave = go.Figure(data=go.Scatter(x=x, y=y, fill='tozeroy'))
-            fig_wave.update_layout(title="Free Surface Elevation", template="plotly_dark", height=200)
-            st.plotly_chart(fig_wave, use_container_width=True)
-
-        with col_res2:
-            st.write("### 论文草稿预览")
-            st.code(f"""
-            Title: Numerical Simulation of {proj.name} 
-            Method: {proj.turbulence} with {proj.innovation}
-
-            Abstract:
-            In this paper, the seakeeping performance of DTMB 5415
-            is investigated using {proj.method}. Results show that...
-            """, language='latex')
-
-        st.write("---")
-        st.write("### 投稿决策")
-        st.write("选择目标期刊：")
-
-        target = st.radio("Target Journal",
-                          ["Journal of Hydrodynamics (IF: 2.5)", "Ocean Engineering (IF: 4.0)", "JFM (IF: 4.5)"])
-
-        if st.button("Submit Paper (点击投稿)"):
-            with st.spinner("Reviewer #2 is reading your manuscript..."):
-                time.sleep(2)
-                submit_paper()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🛠️ 减小松弛因子救一下 (SAN -10)"):
+                p['is_diverged'] = False
+                p['residuals'].append(p['residuals'][-1] - 3)  # 强行压下去
+                update_stat('sanity', -10)
                 st.rerun()
-    else:
-        st.info("暂无待处理数据。")
+        with c2:
+            if st.button("💥 彻底放弃，重开项目"):
+                st.session_state.project['residuals'] = []
+                st.session_state.project['progress'] = 0
+                st.session_state.project['is_diverged'] = False
+                change_phase('config')
 
-# --- 底部日志 ---
-st.write("---")
-st.caption("System Logs:")
-log_txt = "\n".join(st.session_state.logs)
-st.text_area("", log_txt, height=100)
+    elif p['progress'] >= 100:
+        st.success("✅ 计算收敛！")
+        if st.button("📄 提取数据，撰写论文"):
+            change_phase('result')
+
+    else:
+        # 3. 操作区域 (三个策略按钮)
+        st.write("请选择下一步的迭代策略：")
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            if st.button("🛡️ 苟住 (Safe)\nCFL 0.5 | 慢速 | 极稳"):
+                res = run_solver_step('safe')
+                if res == "no_money": st.toast("没钱买机时了！")
+                st.rerun()
+
+        with c2:
+            if st.button("⚖️ 稳健 (Normal)\nCFL 1.0 | 标准 | 微险"):
+                res = run_solver_step('normal')
+                if res == "no_money": st.toast("没钱买机时了！")
+                st.rerun()
+
+        with c3:
+            if st.button("🔥 赌狗 (Risky)\nCFL 5.0 | 极速 | 易炸"):
+                res = run_solver_step('risky')
+                if res == "no_money": st.toast("没钱买机时了！")
+                st.rerun()
+
+# --- 阶段 4: 结果结算 ---
+elif st.session_state.phase == 'result':
+    p = st.session_state.project
+    st.subheader("第四步：投稿环节")
+
+    # 计算最终评分
+    quality = p['difficulty'] * 10 + len(p['innovations']) * 20
+    final_res = p['residuals'][-1]
+    if final_res > -3: quality -= 30  # 收敛不好扣分
+    if p['method'] == 'LES': quality += 30
+
+    st.markdown(f"""
+    <div class='scenario-text'>
+    你完成了《{p['name']}》的模拟。<br>
+    最终残差收敛至: 1e{int(final_res)}<br>
+    论文质量评分: {quality}
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.write("请选择投稿目标：")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("JFM / Ocean Eng. (顶刊)"):
+            if quality > 80:
+                st.balloons()
+                st.success(f"恭喜！Reviewer 虽然提了 20 个意见，但最终接受了！引用 +{quality}")
+                update_stat('citations', quality)
+                update_stat('sanity', 20)
+            else:
+                st.error("拒稿！Reviewer #2 说你的网格无关性验证是伪造的。")
+                update_stat('sanity', -20)
+
+            if st.button("🔄 下一个项目"):
+                st.session_state.project['name'] = ''  # Reset
+                st.session_state.project['progress'] = 0
+                st.session_state.project['innovations'] = []
+                st.session_state.project['residuals'] = []
+                change_phase('home')
+
+    with c2:
+        if st.button("水刊 (Open Access)"):
+            st.success("发表成功！虽然没什么人看，但至少能毕业。引用 +10")
+            update_stat('citations', 10)
+
+            if st.button("🔄 下一个项目"):
+                st.session_state.project['name'] = ''  # Reset
+                st.session_state.project['progress'] = 0
+                st.session_state.project['innovations'] = []
+                st.session_state.project['residuals'] = []
+                change_phase('home')
+
+# 底部重置按钮
+st.markdown("---")
+if st.button("💀 删档重来 (Reset Game)"):
+    st.session_state.clear()
+    st.rerun()
