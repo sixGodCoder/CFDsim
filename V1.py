@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="CFD 极速版", page_icon="⚡", layout="centered")
 
 # CSS: 保持大按钮风格，增加一点动效
+# CSS: 保持大按钮风格，修改了文字框背景颜色
 st.markdown("""
 <style>
     .stButton>button {
@@ -32,6 +33,7 @@ st.markdown("""
     }
     .stat-box {
         background: #222;
+        color: #fff; /* 确保状态栏文字也是白色的 */
         padding: 10px;
         border-radius: 8px;
         text-align: center;
@@ -39,15 +41,18 @@ st.markdown("""
         margin-bottom: 10px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
+    /* 👇👇👇 这里是修改的地方 👇👇👇 */
     .scenario-text {
         font-size: 20px;
         line-height: 1.6;
         margin-bottom: 30px;
         padding: 20px;
-        background: #1E1E1E;
+        background: #f0f2f6; /* 改成了浅灰色背景，看字更清楚 */
+        color: #31333F;      /* 强制文字为深灰色，防止看不见 */
         border-left: 5px solid #00ADB5;
         border-radius: 5px;
     }
+    /* 👆👆👆 修改结束 👆👆👆 */
 </style>
 """, unsafe_allow_html=True)
 
