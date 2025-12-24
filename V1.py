@@ -1,346 +1,391 @@
 import streamlit as st
 import random
 import time
-import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 
 # ==========================================
-# 1. 基础配置
+# 1. 基础配置与样式
 # ==========================================
-st.set_page_config(page_title="CFD 极速版", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="CFD 学术大亨 V6.0", page_icon="🎓", layout="centered")
 
-# CSS: 保持大按钮风格，增加一点动效
-# CSS: 保持大按钮风格，修改了文字框背景颜色
 st.markdown("""
 <style>
+    /* 全局字体优化 */
+    .main { font-family: "Microsoft YaHei", sans-serif; }
+    
+    /* 按钮样式 */
     .stButton>button {
         width: 100%;
-        height: 60px;
-        font-size: 18px !important;
+        height: 55px;
         font-weight: bold;
-        border-radius: 12px;
-        border: 2px solid #333;
-        transition: all 0.1s;
+        border-radius: 10px;
+        border: 1px solid #ddd;
+        transition: all 0.2s;
     }
     .stButton>button:hover {
-        transform: scale(1.02);
         border-color: #00ADB5;
         color: #00ADB5;
+        background-color: #f0faff;
     }
-    .stButton>button:active {
-        transform: scale(0.98);
-    }
-    .stat-box {
-        background: #222;
-        color: #fff; /* 确保状态栏文字也是白色的 */
+    
+    /* 状态栏卡片 */
+    .stat-card {
+        background-color: #ffffff;
         padding: 10px;
         border-radius: 8px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
         text-align: center;
-        border: 1px solid #444;
-        margin-bottom: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        border-top: 3px solid #00ADB5;
     }
-    /* 👇👇👇 这里是修改的地方 👇👇👇 */
-    .scenario-text {
-        font-size: 20px;
-        line-height: 1.6;
-        margin-bottom: 30px;
-        padding: 20px;
-        background: #f0f2f6; /* 改成了浅灰色背景，看字更清楚 */
-        color: #31333F;      /* 强制文字为深灰色，防止看不见 */
-        border-left: 5px solid #00ADB5;
+    .stat-value { font-size: 18px; font-weight: bold; color: #333; }
+    .stat-label { font-size: 12px; color: #666; }
+    
+    /* 剧情文本框 (浅色背景修复版) */
+    .scenario-box {
+        background-color: #f8f9fa;
+        border-left: 5px solid #FF6B6B;
+        padding: 15px;
         border-radius: 5px;
+        margin-bottom: 20px;
+        color: #2c3e50;
+        font-size: 16px;
     }
-    /* 👆👆👆 修改结束 👆👆👆 */
+    
+    /* 商品卡片 */
+    .shop-item {
+        border: 1px solid #eee;
+        padding: 10px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        background: white;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 状态初始化
+# 2. 游戏数据与状态初始化
 # ==========================================
+
+# 装备列表
+SHOP_ITEMS = {
+    "RTX 4090": {"price": 1500, "effect": "speed", "val": 1.5, "desc": "计算速度 +50%"},
+    "UPS 不间断电源": {"price": 800, "effect": "safety", "val": 0.1, "desc": "崩溃概率 -10%"},
+    "GitHub Copilot": {"price": 500, "effect": "sanity_save", "val": 2, "desc": "写代码 SAN 值消耗减半"},
+    "Nature 编辑的邮箱": {"price": 5000, "effect": "luck", "val": 20, "desc": "中稿率大幅提升"},
+}
+
 if 'init' not in st.session_state:
     st.session_state.init = True
-    st.session_state.phase = 'home'  # home, project_select, config, solver, result
-
+    st.session_state.phase = 'home' 
+    
     # 玩家属性
     st.session_state.player = {
         'day': 1,
-        'hair': 100,
-        'sanity': 100,
-        'credits': 1000,  # 增加初始机时
-        'citations': 0
+        'max_days': 1095, # 3年
+        'funds': 3000,    # 经费 (钱)
+        'sanity': 100,    # 理智
+        'citations': 0,   # 引用 (分数)
+        'inventory': [],  # 已买装备
+        'speed_mult': 1.0, # 速度倍率
+        'fail_rate': 0.0   # 降低炸机率
     }
-
+    
     # 当前项目
     st.session_state.project = {
         'name': '',
         'difficulty': 0,
-        'method': '',
-        'innovations': [],
         'progress': 0,
         'residuals': [],
         'is_diverged': False,
-        'diverge_reason': ''
+        'event_active': False, # 是否触发了随机事件
+        'event_msg': ''
     }
 
-
 # ==========================================
-# 3. 逻辑函数
-# ==========================================
-
-def change_phase(new_phase):
-    st.session_state.phase = new_phase
-    st.rerun()
-
-
-def update_stat(key, value):
-    st.session_state.player[key] += value
-
-
-# 核心计算逻辑：支持一次跑多步 (steps 参数)
-def run_solver_batch(mode, steps=1):
-    p = st.session_state.project
-
-    # 模式参数定义
-    if mode == 'safe':
-        cfl = 0.5
-        speed = 1.5
-        risk = 0.0
-        cost = 20
-    elif mode == 'normal':
-        cfl = 1.0
-        speed = 4.0
-        risk = 0.02
-        cost = 10
-    elif mode == 'risky':
-        cfl = 5.0
-        speed = 12.0
-        risk = 0.15 + (p['difficulty'] / 60.0)
-        cost = 5
-
-    # 循环执行 steps 次
-    for _ in range(steps):
-        # 扣费检查
-        if st.session_state.player['credits'] < cost:
-            return "no_money"
-
-        st.session_state.player['credits'] -= cost
-        # 每跑5步过一天
-        if random.random() < 0.2:
-            st.session_state.player['day'] += 1
-
-        # 判定发散
-        innovation_penalty = len(p['innovations']) * 0.03
-        final_risk = risk + innovation_penalty
-
-        if random.random() < final_risk:
-            p['is_diverged'] = True
-            p['diverge_reason'] = random.choice([
-                "Negative Volume (网格负体积)",
-                "SIGSEGV (段错误)",
-                "Divergence in AMG Solver",
-                "Floating Point Exception"
-            ])
-            p['residuals'].append(5.0)  # 爆表
-            update_stat('sanity', -10)
-            update_stat('hair', -5)
-            return "diverged"  # 只要炸一次就停止
-
-        # 进度增加
-        p['progress'] += speed
-
-        # 残差模拟
-        last_res = p['residuals'][-1] if p['residuals'] else -0.5
-        base_drop = -0.15 if cfl < 2 else -0.05
-        noise = random.uniform(-0.3, 0.3) * cfl
-        new_res = last_res + base_drop + noise
-        new_res = max(-7, new_res)  # 下限
-        p['residuals'].append(new_res)
-
-        if p['progress'] >= 100:
-            return "done"
-
-    return "running"
-
-
-# ==========================================
-# 4. 局部刷新片段 (@st.fragment)
+# 3. 核心逻辑
 # ==========================================
 
-# ⚠️ 关键点：这个函数里的内容会独立刷新，不会导致整个网页重载
-@st.fragment
-def solver_dashboard():
+def update_player_stats():
+    # 根据装备重新计算属性
+    p = st.session_state.player
+    p['speed_mult'] = 1.0
+    p['fail_rate'] = 0.0
+    
+    if "RTX 4090" in p['inventory']: p['speed_mult'] += 0.5
+    if "UPS 不间断电源" in p['inventory']: p['fail_rate'] -= 0.1
+
+def trigger_random_event():
+    events = [
+        {"msg": "License 服务器连接超时！", "damage": "sanity", "val": -10, "choice": "重启路由器"},
+        {"msg": "空调坏了，机房温度飙升！", "damage": "funds", "val": -200, "choice": "买冰块降温"},
+        {"msg": "师弟把网格文件删了！", "damage": "progress", "val": -20, "choice": "从备份恢复"},
+        {"msg": "发现官方文档里的公式印错了！", "damage": "sanity", "val": -15, "choice": "痛骂软件商"}
+    ]
+    if random.random() < 0.15: # 15% 概率触发
+        evt = random.choice(events)
+        st.session_state.project['event_active'] = True
+        st.session_state.project['event_msg'] = evt
+        return True
+    return False
+
+def run_solver_logic(mode):
     p = st.session_state.project
     pl = st.session_state.player
+    
+    # 策略参数
+    settings = {
+        'safe': {'cfl': 0.5, 'spd': 2, 'risk': 0.0, 'cost': 10},
+        'normal': {'cfl': 1.0, 'spd': 5, 'risk': 0.05, 'cost': 5},
+        'risky': {'cfl': 5.0, 'spd': 15, 'risk': 0.2, 'cost': 0}
+    }
+    s = settings[mode]
+    
+    # 扣费 (机时费)
+    pl['funds'] -= s['cost']
+    pl['day'] += 1
+    
+    # 随机事件检查 (优先级最高)
+    if trigger_random_event():
+        return "event_triggered"
 
-    # 1. 实时状态栏 (放在这里以保证实时更新)
+    # 计算炸机概率 (基础风险 + 难度 - 装备保护)
+    final_risk = s['risk'] + (p['difficulty'] / 100.0) + pl['fail_rate']
+    if random.random() < final_risk:
+        p['is_diverged'] = True
+        p['residuals'].append(5.0)
+        pl['sanity'] -= 10
+        return "diverged"
+
+    # 正常推进
+    actual_speed = s['spd'] * pl['speed_mult']
+    p['progress'] += actual_speed
+    
+    # 残差模拟
+    last = p['residuals'][-1] if p['residuals'] else -0.5
+    noise = random.uniform(-0.2, 0.2) * s['cfl']
+    trend = -0.1 if s['cfl'] < 2 else -0.02
+    new_res = max(-7, last + trend + noise)
+    p['residuals'].append(new_res)
+    
+    if p['progress'] >= 100:
+        return "done"
+    return "running"
+
+# ==========================================
+# 4. 界面组件 (Fragments)
+# ==========================================
+
+# 顶部状态栏
+def render_header():
+    pl = st.session_state.player
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(f"<div class='stat-box'>📅 Day {pl['day']}</div>", unsafe_allow_html=True)
-    c2.markdown(f"<div class='stat-box'>💰 机时 {pl['credits']}</div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='stat-box'>🧠 SAN {pl['sanity']}</div>", unsafe_allow_html=True)
-    c4.markdown(f"<div class='stat-box'>👴 发量 {pl['hair']}%</div>", unsafe_allow_html=True)
+    c1.markdown(f"<div class='stat-card'><div class='stat-value'>{pl['day']}/{pl['max_days']}</div><div class='stat-label'>倒计时 (天)</div></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='stat-card'><div class='stat-value'>¥{pl['funds']}</div><div class='stat-label'>科研经费</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='stat-card'><div class='stat-value'>{pl['sanity']}</div><div class='stat-label'>SAN值</div></div>", unsafe_allow_html=True)
+    c4.markdown(f"<div class='stat-card'><div class='stat-value'>{pl['citations']}</div><div class='stat-label'>学术引用</div></div>", unsafe_allow_html=True)
+    st.markdown("---")
 
-    st.write("---")
-
-    # 2. 绘图区域 (Plotly)
+# 求解器面板 (局部刷新)
+@st.fragment
+def solver_panel():
+    p = st.session_state.project
+    
+    # 1. 绘图
     if p['residuals']:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            y=p['residuals'],
-            mode='lines',
-            name='Residual',
-            line=dict(color='#00ADB5', width=3)
-        ))
-        fig.update_layout(
-            title=f"残差监视器 (Progress: {int(p['progress'])}%)",
-            xaxis_title="Iterations",
-            yaxis_title="Log(Residuals)",
-            template="plotly_dark",
-            height=280,
-            margin=dict(l=20, r=20, t=40, b=20),
-            yaxis_range=[-8, 8]
-        )
+        fig.add_trace(go.Scatter(y=p['residuals'], mode='lines', line=dict(color='#00ADB5', width=2)))
+        fig.update_layout(height=250, margin=dict(t=10,b=10,l=10,r=10), 
+                         template='plotly_white', xaxis_title="Iterations", yaxis_title="Log Residual")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("准备就绪，请选择求解策略开始迭代...")
+        st.info("💡 准备就绪。请选择策略开始迭代。")
 
-    # 3. 交互区域
-    if p['is_diverged']:
-        st.error(f"❌ 计算发散！错误代码: {p['diverge_reason']}")
+    # 2. 状态处理
+    if p['event_active']:
+        evt = p['event_msg']
+        st.markdown(f"<div class='scenario-box'>⚡ 突发事件：{evt['msg']}</div>", unsafe_allow_html=True)
+        if st.button(f"😭 {evt['choice']} ({evt['damage']} {evt['val']})"):
+            # 结算事件伤害
+            if evt['damage'] == 'funds': st.session_state.player['funds'] += evt['val']
+            if evt['damage'] == 'sanity': st.session_state.player['sanity'] += evt['val']
+            if evt['damage'] == 'progress': p['progress'] = max(0, p['progress'] + evt['val'])
+            p['event_active'] = False
+            st.rerun()
+
+    elif p['is_diverged']:
+        st.error("💥 残差发散！计算崩溃了。")
         c1, c2 = st.columns(2)
-        if c1.button("🛠️ 减小松弛因子救一下"):
-            p['is_diverged'] = False
-            p['residuals'].append(p['residuals'][-1] - 3)
-            update_stat('sanity', -10)
-            st.rerun()  # 刷新片段
-
-        if c2.button("💥 彻底放弃 (Restart)"):
+        if c1.button("🛠️ 紧急修复 (花费 ¥200)"):
+            if st.session_state.player['funds'] >= 200:
+                st.session_state.player['funds'] -= 200
+                p['is_diverged'] = False
+                p['residuals'].append(p['residuals'][-1] - 2)
+                st.rerun()
+            else:
+                st.toast("没钱修复！")
+        if c2.button("💀 放弃重开"):
             p['residuals'] = []
             p['progress'] = 0
             p['is_diverged'] = False
-            st.session_state.phase = 'config'  # 修改全局状态
-            st.rerun()  # 触发刷新，以便跳出
+            st.session_state.phase = 'lobby'
+            st.rerun()
 
     elif p['progress'] >= 100:
-        st.success("✅ 计算收敛完成！")
-        if st.button("📄 提取数据，撰写论文"):
+        st.success("✅ 计算完成！")
+        if st.button("📄 整理数据去发论文"):
             st.session_state.phase = 'result'
             st.rerun()
 
     else:
-        st.write("请选择迭代策略：")
+        # 正常操作区
         c1, c2, c3 = st.columns(3)
-
-        # 策略按钮：不再是跑1步，而是跑N步
         with c1:
-            if st.button("🛡️ 苟住 (Safe)\n单步调试"):
-                res = run_solver_batch('safe', steps=1)
-                if res == "no_money": st.toast("没钱买机时了！")
+            if st.button("🛡️ 稳健迭代\nCFL 0.5 | ¥10"):
+                run_solver_logic('safe')
                 st.rerun()
-
         with c2:
-            if st.button("⚖️ 稳健 (Normal)\n连续 5 步"):
-                res = run_solver_batch('normal', steps=5)
-                if res == "no_money": st.toast("没钱买机时了！")
+            if st.button("⚖️ 标准迭代\nCFL 1.0 | ¥5"):
+                run_solver_logic('normal')
                 st.rerun()
-
         with c3:
-            if st.button("🔥 赌狗 (Risky)\n连续 20 步"):
-                res = run_solver_batch('risky', steps=20)
-                if res == "no_money": st.toast("没钱买机时了！")
+            if st.button("🔥 激进迭代\nCFL 5.0 | 免费"):
+                run_solver_logic('risky')
                 st.rerun()
 
-
 # ==========================================
-# 5. 主程序流控制
+# 5. 主流程控制
 # ==========================================
 
-# 顶部标题 (只渲染一次)
-if st.session_state.phase != 'solver':
-    # 只要不是solver阶段，显示全局状态栏
-    pl = st.session_state.player
-    c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(f"<div class='stat-box'>📅 Day {pl['day']}</div>", unsafe_allow_html=True)
-    c2.markdown(f"<div class='stat-box'>💰 机时 {pl['credits']}</div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='stat-box'>🧠 SAN {pl['sanity']}</div>", unsafe_allow_html=True)
-    c4.markdown(f"<div class='stat-box'>👴 发量 {pl['hair']}%</div>", unsafe_allow_html=True)
-    st.markdown("---")
+render_header()
+
+# --- 游戏结束判断 ---
+if st.session_state.player['day'] >= 1095:
+    st.error("⏳ 3年非升即走考核期满！")
+    if st.session_state.player['citations'] >= 1000:
+        st.balloons()
+        st.markdown("# 🎉 恭喜！你获得了终身教职 (Tenure)！")
+        st.markdown("你成为了学术界的大佬，从此以后可以尽情压榨学生了（误）。")
+    else:
+        st.markdown("# 😭 考核失败")
+        st.markdown(f"你只获得了 {st.session_state.player['citations']} 引用，距离目标还差 {1000 - st.session_state.player['citations']}。")
+        st.markdown("你被迫转行去送外卖了。")
+    if st.button("🔄 重新开始人生"):
+        st.session_state.clear()
+        st.rerun()
+    st.stop()
+
+if st.session_state.player['funds'] < 0:
+    st.error("💸 经费耗尽，项目组破产解散！")
+    if st.button("🔄 重新开始"):
+        st.session_state.clear()
+        st.rerun()
+    st.stop()
 
 # --- 阶段分发 ---
 
 if st.session_state.phase == 'home':
-    st.title("⚡ CFD 极速模拟器")
+    st.title("🎓 CFD 学术大亨")
     st.markdown("""
-    <div class='scenario-text'>
-    这是使用了 Streamlit Fragment 技术的极速版本。<br>
-    求解器阶段不再全页刷新，操作零延迟。<br><br>
-    目标：在博士毕业前发出一篇 SCI。
+    <div class='scenario-box'>
+    <b>目标：</b>在 3 年 (1095天) 内获得 1000 次引用。<br>
+    <b>资源：</b>管理你的经费、SAN值和计算资源。<br>
+    <b>警告：</b>小心发散，小心审稿人。
     </div>
     """, unsafe_allow_html=True)
-    if st.button("👉 开始干活"):
-        change_phase('project_select')
+    if st.button("🚀 开始学术生涯"):
+        st.session_state.phase = 'lobby'
+        st.rerun()
 
-elif st.session_state.phase == 'project_select':
-    st.subheader("选择课题")
-    c1, c2, c3 = st.columns(3)
-    if c1.button("🟢 DTMB 5415"):
-        st.session_state.project.update({'name': 'DTMB 5415', 'difficulty': 2})
-        change_phase('config')
-    if c2.button("🟡 KCS 货船"):
-        st.session_state.project.update({'name': 'KCS 货船', 'difficulty': 5})
-        change_phase('config')
-    if c3.button("🔴 ONR 破损船"):
-        st.session_state.project.update({'name': 'ONR 破损船', 'difficulty': 9})
-        change_phase('config')
+elif st.session_state.phase == 'lobby':
+    st.subheader("🏫 实验室大厅")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.write("#### 📂 接新项目")
+        st.info("完成项目可获得经费和引用。")
+        c1, c2, c3 = st.columns(3)
+        if c1.button("🟢 圆柱绕流\n难度: 低 | 收益: 低"):
+            st.session_state.project.update({'name': '圆柱绕流', 'difficulty': 10, 'reward_funds': 1000})
+            st.session_state.phase = 'solver'
+            st.rerun()
+        if c2.button("🟡 KCS 船模\n难度: 中 | 收益: 中"):
+            st.session_state.project.update({'name': 'KCS 船模', 'difficulty': 30, 'reward_funds': 2500})
+            st.session_state.phase = 'solver'
+            st.rerun()
+        if c3.button("🔴 实船破舱\n难度: 高 | 收益: 高"):
+            st.session_state.project.update({'name': '实船破舱', 'difficulty': 60, 'reward_funds': 6000})
+            st.session_state.phase = 'solver'
+            st.rerun()
 
-elif st.session_state.phase == 'config':
-    st.subheader("配置物理模型")
-    st.write("选择湍流模型与创新点：")
-
-    # 简化流程：点按钮直接添加/移除
-    c1, c2 = st.columns(2)
-    if c1.button("➕ 添加重叠网格 (Overset)"):
-        if "Overset" not in st.session_state.project['innovations']:
-            st.session_state.project['innovations'].append("Overset")
-            st.toast("已添加 Overset")
-
-    if c2.button("➕ 添加 6-DOF"):
-        if "6-DOF" not in st.session_state.project['innovations']:
-            st.session_state.project['innovations'].append("6-DOF")
-            st.toast("已添加 6-DOF")
-
-    st.write(f"当前创新点: {st.session_state.project['innovations']}")
-    st.markdown("---")
-
-    if st.button("🚀 开始计算"):
-        st.session_state.project['residuals'] = [-1.0]
-        change_phase('solver')
+    with col2:
+        st.write("#### 🛒 采购设备")
+        for name, item in SHOP_ITEMS.items():
+            disabled = name in st.session_state.player['inventory']
+            btn_label = "✅ 已拥有" if disabled else f"¥{item['price']} 购买"
+            
+            with st.container(border=True):
+                st.write(f"**{name}**")
+                st.caption(item['desc'])
+                if st.button(btn_label, key=name, disabled=disabled):
+                    if st.session_state.player['funds'] >= item['price']:
+                        st.session_state.player['funds'] -= item['price']
+                        st.session_state.player['inventory'].append(name)
+                        update_player_stats()
+                        st.toast(f"成功购买 {name}!")
+                        st.rerun()
+                    else:
+                        st.toast("经费不足！")
 
 elif st.session_state.phase == 'solver':
-    # 这一步直接调用 Fragment 函数
-    # 主程序在这里停止刷新，剩下的交互全在 solver_dashboard 内部闭环
-    solver_dashboard()
+    st.subheader(f"正在计算：{st.session_state.project['name']}")
+    solver_panel()
 
 elif st.session_state.phase == 'result':
-    st.subheader("投稿结果")
     p = st.session_state.project
-    quality = p['difficulty'] * 10 + len(p['innovations']) * 20
-    if p['residuals'][-1] > -3: quality -= 40
-
-    st.markdown(f"<div class='scenario-text'>论文质量评分: {quality}</div>", unsafe_allow_html=True)
-
-    if st.button("投递顶刊"):
-        if quality > 70:
-            st.balloons()
-            st.success("Accepted! 导师很高兴。")
-            update_stat('citations', quality)
-        else:
-            st.error("Rejected! 审稿人建议转投。")
-            update_stat('sanity', -20)
-
-    if st.button("🔄 下一个项目"):
-        st.session_state.project['progress'] = 0
-        st.session_state.project['residuals'] = []
-        st.session_state.project['innovations'] = []
-        change_phase('home')
+    pl = st.session_state.player
+    
+    st.subheader("📧 投稿结果反馈")
+    
+    # 结算逻辑
+    base_score = random.randint(50, 100)
+    if "Nature 编辑的邮箱" in pl['inventory']: base_score += 20
+    
+    quality = base_score - (p['residuals'][-1] * 5) # 残差越小分越高
+    
+    st.markdown(f"<div class='scenario-box'>论文质量评分: {int(quality)}</div>", unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("投递顶刊 (JFM/JCP)"):
+            if quality > 85:
+                st.balloons()
+                reward_cite = random.randint(50, 150)
+                pl['citations'] += reward_cite
+                pl['funds'] += p['reward_funds']
+                st.success(f"录用！获得 {reward_cite} 引用，结题经费 ¥{p['reward_funds']}")
+            else:
+                st.error("拒稿！评审意见：创新点不足。")
+                pl['sanity'] -= 20
+            
+            # 无论成功失败，都回大厅
+            if st.button("🔙 返回大厅"):
+                st.session_state.project['progress'] = 0
+                st.session_state.project['residuals'] = []
+                st.session_state.project['is_diverged'] = False
+                st.session_state.phase = 'lobby'
+                st.rerun()
+                
+    with col2:
+        if st.button("投递水刊 (OA期刊)"):
+            reward_cite = random.randint(5, 20)
+            pl['citations'] += reward_cite
+            pl['funds'] += int(p['reward_funds'] * 0.5) # 水刊结题评价低
+            st.success(f"录用 (虽然要交版面费)。获得 {reward_cite} 引用，经费 ¥{int(p['reward_funds']*0.5)}")
+            
+            if st.button("🔙 返回大厅"):
+                st.session_state.project['progress'] = 0
+                st.session_state.project['residuals'] = []
+                st.session_state.project['is_diverged'] = False
+                st.session_state.phase = 'lobby'
+                st.rerun()
